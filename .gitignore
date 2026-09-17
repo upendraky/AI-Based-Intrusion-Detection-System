@@ -51,3 +51,8 @@ untitled.py
 
 # Anaconda project metadata
 anaconda_projects/
+
+# Unused/legacy model artifacts
+models/random_forest_ids.pkl
+models/scaler.pkl
+models/xgboost_ids.pkl
