@@ -68,7 +68,6 @@ templates = Jinja2Templates(
 # ============================================================
 
 model = None
-
 selector = None
 
 
@@ -85,12 +84,8 @@ try:
     print("========================================")
     print("Sentinel AI IDS")
     print("========================================")
-    print(
-        "XGBoost model loaded successfully."
-    )
-    print(
-        "Feature selector loaded successfully."
-    )
+    print("XGBoost model loaded successfully.")
+    print("Feature selector loaded successfully.")
     print("PostgreSQL persistence enabled.")
     print("========================================")
 
@@ -111,6 +106,37 @@ except Exception as e:
 class PredictionRequest(BaseModel):
 
     features: dict
+
+
+# ============================================================
+# THREAT CALCULATION
+# ============================================================
+
+def calculate_threat(probability: float):
+
+    probability = max(
+        0.0,
+        min(1.0, float(probability))
+    )
+
+    threat_score = round(
+        probability * 100,
+        2
+    )
+
+    if threat_score >= 90:
+        severity = "CRITICAL"
+
+    elif threat_score >= 70:
+        severity = "HIGH"
+
+    elif threat_score >= 40:
+        severity = "MEDIUM"
+
+    else:
+        severity = "LOW"
+
+    return threat_score, severity
 
 
 # ============================================================
@@ -139,6 +165,8 @@ def health():
 
     database_status = "offline"
 
+    db = None
+
     try:
 
         db = SessionLocal()
@@ -147,14 +175,16 @@ def health():
             func.now().select()
         )
 
-        db.close()
-
         database_status = "online"
 
     except Exception:
 
         database_status = "offline"
 
+    finally:
+
+        if db:
+            db.close()
 
     return {
 
@@ -168,7 +198,6 @@ def health():
 
         "database":
             database_status
-
     }
 
 
@@ -205,7 +234,6 @@ def model_info():
 
         "selector_file":
             "feature_selector.pkl"
-
     }
 
 
@@ -218,10 +246,6 @@ def predict(
     request: PredictionRequest
 ):
 
-    # --------------------------------------------------------
-    # MODEL CHECK
-    # --------------------------------------------------------
-
     if model is None:
 
         raise HTTPException(
@@ -229,14 +253,12 @@ def predict(
             detail="AI model is not loaded."
         )
 
-
     if selector is None:
 
         raise HTTPException(
             status_code=503,
             detail="Feature selector is not loaded."
         )
-
 
     try:
 
@@ -270,7 +292,7 @@ def predict(
 
 
         # ====================================================
-        # VALIDATE FEATURES
+        # VALIDATE
         # ====================================================
 
         if input_df.isnull().any().any():
@@ -292,9 +314,7 @@ def predict(
 
                     "features":
                         invalid_features
-
                 }
-
             )
 
 
@@ -311,7 +331,6 @@ def predict(
                 selector.feature_names_in_
             )
 
-
             missing_features = [
 
                 feature
@@ -321,9 +340,7 @@ def predict(
 
                 if feature
                 not in input_df.columns
-
             ]
-
 
             if missing_features:
 
@@ -338,11 +355,8 @@ def predict(
 
                         "missing_features":
                             missing_features
-
                     }
-
                 )
-
 
             input_df = input_df[
                 expected_features
@@ -365,11 +379,9 @@ def predict(
         # ====================================================
 
         prediction = int(
-
             model.predict(
                 selected_features
             )[0]
-
         )
 
 
@@ -377,6 +389,15 @@ def predict(
             model.predict_proba(
                 selected_features
             )[0]
+        )
+
+
+        # IMPORTANT:
+        # Class 1 = DDoS
+        # Therefore probabilities[1] = P(DDoS)
+
+        ddos_probability = float(
+            probabilities[1]
         )
 
 
@@ -389,43 +410,21 @@ def predict(
         # CLASSIFICATION
         # ====================================================
 
-        if prediction == 1:
+        label = (
+            "DDoS"
+            if prediction == 1
+            else "BENIGN"
+        )
 
-            label = "DDoS"
 
-            threat_score = round(
-                confidence * 100,
-                2
+        # Threat score always represents
+        # probability of the DDoS class.
+
+        threat_score, severity = (
+            calculate_threat(
+                ddos_probability
             )
-
-
-            if threat_score >= 90:
-
-                severity = "CRITICAL"
-
-            elif threat_score >= 70:
-
-                severity = "HIGH"
-
-            elif threat_score >= 40:
-
-                severity = "MEDIUM"
-
-            else:
-
-                severity = "LOW"
-
-
-        else:
-
-            label = "BENIGN"
-
-            threat_score = round(
-                (1 - confidence) * 100,
-                2
-            )
-
-            severity = "LOW"
+        )
 
 
         # ====================================================
@@ -444,6 +443,7 @@ def predict(
 
                 label=label,
 
+                # Confidence of the predicted class
                 confidence=round(
                     confidence * 100,
                     2
@@ -456,7 +456,6 @@ def predict(
                 source="CICIDS2017 Simulator",
 
                 status="Detected"
-
             )
 
 
@@ -465,7 +464,6 @@ def predict(
             db.commit()
 
             db.refresh(detection)
-
 
             event_id = detection.id
 
@@ -479,16 +477,14 @@ def predict(
                 status_code=500,
 
                 detail={
+
                     "message":
                         "Prediction succeeded but database save failed.",
 
                     "error":
                         str(database_error)
-
                 }
-
             )
-
 
         finally:
 
@@ -513,6 +509,12 @@ def predict(
                     2
                 ),
 
+            "ddos_probability":
+                round(
+                    ddos_probability * 100,
+                    4
+                ),
+
             "threat_score":
                 threat_score,
 
@@ -522,11 +524,13 @@ def predict(
             "event_id":
                 event_id,
 
+            "source":
+                "CICIDS2017 Simulator",
+
             "timestamp":
                 datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
-
         }
 
 
@@ -542,7 +546,6 @@ def predict(
             status_code=500,
 
             detail=str(e)
-
         )
 
 
@@ -550,13 +553,10 @@ def predict(
 # DASHBOARD SUMMARY
 # ============================================================
 
-@app.get(
-    "/api/dashboard/summary"
-)
+@app.get("/api/dashboard/summary")
 def dashboard_summary():
 
     db = SessionLocal()
-
 
     try:
 
@@ -579,16 +579,57 @@ def dashboard_summary():
         ).scalar() or 0
 
 
-        if total > 0:
+        live_total = db.query(
+            func.count(Detection.id)
+        ).filter(
+            Detection.source == "Live Network"
+        ).scalar() or 0
 
-            threat_rate = round(
+
+        live_ddos = db.query(
+            func.count(Detection.id)
+        ).filter(
+            Detection.source == "Live Network",
+            Detection.prediction == 1
+        ).scalar() or 0
+
+
+        live_benign = db.query(
+            func.count(Detection.id)
+        ).filter(
+            Detection.source == "Live Network",
+            Detection.prediction == 0
+        ).scalar() or 0
+
+
+        simulator_total = db.query(
+            func.count(Detection.id)
+        ).filter(
+            Detection.source == "CICIDS2017 Simulator"
+        ).scalar() or 0
+
+
+        # Runtime threat rate.
+        # This is NOT model recall.
+
+        threat_rate = (
+            round(
                 (ddos / total) * 100,
                 2
             )
+            if total > 0
+            else 0.0
+        )
 
-        else:
 
-            threat_rate = 0.0
+        live_threat_rate = (
+            round(
+                (live_ddos / live_total) * 100,
+                2
+            )
+            if live_total > 0
+            else 0.0
+        )
 
 
         return {
@@ -602,15 +643,29 @@ def dashboard_summary():
             "benign_traffic":
                 benign,
 
-            "detection_rate":
+            "threat_rate":
                 threat_rate,
+
+            "live_total":
+                live_total,
+
+            "live_ddos":
+                live_ddos,
+
+            "live_benign":
+                live_benign,
+
+            "live_threat_rate":
+                live_threat_rate,
+
+            "simulator_total":
+                simulator_total,
 
             "model":
                 "XGBoost",
 
             "status":
                 "active"
-
         }
 
 
@@ -628,24 +683,27 @@ def traffic():
 
     db = SessionLocal()
 
-
     try:
 
-        rows = db.query(
-            Detection
-        ).order_by(
-            Detection.id.desc()
-        ).limit(
-            20
-        ).all()
-
+        rows = (
+            db.query(Detection)
+            .order_by(
+                Detection.id.desc()
+            )
+            .limit(20)
+            .all()
+        )
 
         rows.reverse()
 
+        data = []
 
-        data = [
+        for row in rows:
 
-            {
+            data.append({
+
+                "id":
+                    row.id,
 
                 "time":
                     row.timestamp.strftime(
@@ -653,14 +711,45 @@ def traffic():
                     ),
 
                 "traffic":
-                    row.id
+                    int(
+                        row.packet_count
+                        or 0
+                    ),
 
-            }
+                "packets":
+                    int(
+                        row.packet_count
+                        or 0
+                    ),
 
-            for row in rows
+                "bytes":
+                    int(
+                        row.byte_count
+                        or 0
+                    ),
 
-        ]
+                "prediction":
+                    int(
+                        row.prediction
+                        or 0
+                    ),
 
+                "label":
+                    row.label,
+
+                "threat_score":
+                    float(
+                        row.threat_score
+                        or 0
+                    ),
+
+                "severity":
+                    row.severity,
+
+                "source":
+                    row.source
+
+            })
 
         return {
 
@@ -669,11 +758,9 @@ def traffic():
 
         }
 
-
     finally:
 
         db.close()
-
 
 # ============================================================
 # RECENT THREATS
@@ -683,7 +770,6 @@ def traffic():
 def threats():
 
     db = SessionLocal()
-
 
     try:
 
@@ -716,23 +802,170 @@ def threats():
                     "confidence":
                         row.confidence,
 
+                    "threat_score":
+                        row.threat_score,
+
                     "source":
                         row.source,
 
                     "status":
                         row.status,
 
+                    "src_ip":
+                        row.src_ip,
+
+                    "dst_ip":
+                        row.dst_ip,
+
+                    "src_port":
+                        row.src_port,
+
+                    "dst_port":
+                        row.dst_port,
+
+                    "protocol":
+                        row.protocol,
+
+                    "packet_count":
+                        row.packet_count,
+
+                    "byte_count":
+                        row.byte_count,
+
                     "timestamp":
                         row.timestamp.strftime(
                             "%H:%M:%S"
                         )
-
                 }
 
                 for row in rows
-
             ]
+        }
 
+
+    finally:
+
+        db.close()
+
+
+# ============================================================
+# LIVE DETECTIONS
+# ============================================================
+
+@app.get("/api/live-detections")
+def live_detections():
+
+    db = SessionLocal()
+
+    try:
+
+        rows = db.query(
+            Detection
+        ).filter(
+            Detection.source == "Live Network"
+        ).order_by(
+            Detection.id.desc()
+        ).limit(
+            20
+        ).all()
+
+
+        return {
+
+            "detections": [
+
+                {
+
+                    "id":
+                        row.id,
+
+                    "timestamp":
+                        row.timestamp.strftime(
+                            "%H:%M:%S"
+                        ),
+
+                    "label":
+                        row.label,
+
+                    "severity":
+                        row.severity,
+
+                    "confidence":
+                        row.confidence,
+
+                    "threat_score":
+                        row.threat_score,
+
+                    "src_ip":
+                        row.src_ip,
+
+                    "dst_ip":
+                        row.dst_ip,
+
+                    "src_port":
+                        row.src_port,
+
+                    "dst_port":
+                        row.dst_port,
+
+                    "protocol":
+                        row.protocol,
+
+                    "packet_count":
+                        row.packet_count,
+
+                    "byte_count":
+                        row.byte_count,
+
+                    "duration":
+                        row.duration,
+
+                    "status":
+                        row.status
+                }
+
+                for row in rows
+            ]
+        }
+
+
+    finally:
+
+        db.close()
+
+
+# ============================================================
+# SOURCE SUMMARY
+# ============================================================
+
+@app.get("/api/source-summary")
+def source_summary():
+
+    db = SessionLocal()
+
+    try:
+
+        simulator = db.query(
+            func.count(Detection.id)
+        ).filter(
+            Detection.source == "CICIDS2017 Simulator"
+        ).scalar() or 0
+
+
+        live = db.query(
+            func.count(Detection.id)
+        ).filter(
+            Detection.source == "Live Network"
+        ).scalar() or 0
+
+
+        return {
+
+            "simulator":
+                simulator,
+
+            "live_network":
+                live
         }
 
 
@@ -750,14 +983,29 @@ def threat_score():
 
     db = SessionLocal()
 
-
     try:
 
-        latest = db.query(
+        # Prefer the most recent LIVE detection.
+        # If none exists, fall back to the latest detection.
+
+        latest_live = db.query(
             Detection
+        ).filter(
+            Detection.source == "Live Network"
         ).order_by(
             Detection.id.desc()
         ).first()
+
+
+        latest = latest_live
+
+        if latest is None:
+
+            latest = db.query(
+                Detection
+            ).order_by(
+                Detection.id.desc()
+            ).first()
 
 
         if latest is None:
@@ -774,28 +1022,28 @@ def threat_score():
                     "LOW",
 
                 "model":
-                    "XGBoost"
+                    "XGBoost",
 
+                "source":
+                    None
             }
 
 
-        score = latest.threat_score
+        score = float(
+            latest.threat_score
+        )
 
 
         if score >= 90:
-
             level = "CRITICAL"
 
         elif score >= 70:
-
             level = "HIGH"
 
         elif score >= 40:
-
             level = "MEDIUM"
 
         else:
-
             level = "LOW"
 
 
@@ -811,8 +1059,15 @@ def threat_score():
                 latest.severity,
 
             "model":
-                "XGBoost"
+                "XGBoost",
 
+            "source":
+                latest.source,
+
+            "timestamp":
+                latest.timestamp.strftime(
+                    "%H:%M:%S"
+                )
         }
 
 
@@ -829,7 +1084,6 @@ def threat_score():
 def detection_status():
 
     db = SessionLocal()
-
 
     try:
 
@@ -852,6 +1106,13 @@ def detection_status():
         ).scalar() or 0
 
 
+        live = db.query(
+            func.count(Detection.id)
+        ).filter(
+            Detection.source == "Live Network"
+        ).scalar() or 0
+
+
         latest = db.query(
             Detection
         ).order_by(
@@ -870,6 +1131,9 @@ def detection_status():
             "ddos_flows":
                 ddos,
 
+            "live_flows":
+                live,
+
             "latest_label":
                 latest.label
                 if latest
@@ -885,13 +1149,17 @@ def detection_status():
                 if latest
                 else "LOW",
 
+            "latest_source":
+                latest.source
+                if latest
+                else None,
+
             "last_updated":
                 latest.timestamp.strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
                 if latest
                 else None
-
         }
 
 
@@ -909,11 +1177,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-
         app,
-
         host="0.0.0.0",
-
         port=8000
-
     )
