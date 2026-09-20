@@ -18,11 +18,12 @@ from datetime import datetime
 # ============================================================
 # DATABASE CONFIGURATION
 # ============================================================
+import os
 
-DATABASE_URL = (
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
     "postgresql://localhost:5432/sentinel_ids"
 )
-
 
 # ============================================================
 # DATABASE ENGINE
@@ -61,6 +62,10 @@ class Detection(Base):
     __tablename__ = "detections"
 
 
+    # --------------------------------------------------------
+    # ID
+    # --------------------------------------------------------
+
     id = Column(
         Integer,
         primary_key=True,
@@ -68,12 +73,20 @@ class Detection(Base):
     )
 
 
+    # --------------------------------------------------------
+    # TIMESTAMP
+    # --------------------------------------------------------
+
     timestamp = Column(
         DateTime,
         default=datetime.utcnow,
         index=True
     )
 
+
+    # --------------------------------------------------------
+    # ML PREDICTION
+    # --------------------------------------------------------
 
     prediction = Column(
         Integer,
@@ -105,6 +118,10 @@ class Detection(Base):
     )
 
 
+    # --------------------------------------------------------
+    # SOURCE / STATUS
+    # --------------------------------------------------------
+
     source = Column(
         String(255),
         default="CICIDS2017 Simulator"
@@ -114,6 +131,58 @@ class Detection(Base):
     status = Column(
         String(50),
         default="Detected"
+    )
+
+
+    # ========================================================
+    # LIVE NETWORK METADATA
+    # ========================================================
+
+    src_ip = Column(
+        String(45),
+        nullable=True
+    )
+
+
+    dst_ip = Column(
+        String(45),
+        nullable=True
+    )
+
+
+    src_port = Column(
+        Integer,
+        nullable=True
+    )
+
+
+    dst_port = Column(
+        Integer,
+        nullable=True
+    )
+
+
+    protocol = Column(
+        String(20),
+        nullable=True
+    )
+
+
+    packet_count = Column(
+        Integer,
+        nullable=True
+    )
+
+
+    byte_count = Column(
+        Integer,
+        nullable=True
+    )
+
+
+    duration = Column(
+        Float,
+        nullable=True
     )
 
 
